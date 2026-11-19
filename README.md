@@ -1,80 +1,77 @@
-# Nimbus Portal
+# Nimbus Portal · DE101
 
-A free cloud-portal sandbox for learning data engineering. It runs entirely in your browser: there's no backend, no cloud account and no cost.
+A browser replica of the Azure portal that behaves like Azure, with an MIT-style practical course in data engineering on top. Everything runs in your browser; nothing costs money.
 
-The layout and concepts follow the big cloud portals, and every service notes its Azure equivalent so the names you learn carry over to real work.
+## What "behaves like Azure" means
 
-| Nimbus service | What it does here | Azure equivalent |
-| --- | --- | --- |
-| Resource groups | Organise resources and delete them together | Resource groups |
-| Lake storage | Containers, folders, upload, preview, sample data | ADLS Gen2 storage account |
-| SQL database | A real SQL engine (SQLite, compiled to JS) with a query editor | Azure SQL Database |
-| Pipeline factory | Linked services, pipelines, Copy / Script / Data flow / Validate / Delete / Wait activities, parameters, expressions, schedule and storage-event triggers, run monitoring | Azure Data Factory |
-| Analytics workspace | SQL + Markdown notebooks with per-notebook sessions | Databricks / Synapse notebooks |
-| Cloud Shell | `ls`, `cat`, `sql`, `pipeline run`, `nimbus group create`… | Cloud Shell + Azure CLI |
-| Learning center | 10 guided labs whose steps check themselves | — |
-| Tutor | Chat tutor that knows your current lab and resources (works when opened as a Claude artifact) | — |
+Strict realism mode (the default) reproduces the friction you meet in a real subscription:
 
-## Run it locally
+- **Create forms** with the portal's tabs, defaults and rules: RA-GRS pre-selected, hierarchical namespace off on the Advanced tab, SQL server networking defaulting to *No access*, globally unique names.
+- **Identity**: managed identities for data factories and Databricks workspaces; RBAC with the real role definitions. *Owner* and *Contributor* don't grant data access; you need *Storage Blob Data …* roles. Roles can be scoped to containers, and assignments take time to propagate.
+- **Azure SQL**: a logical server with public network access, firewall rules (including `AllowAllWindowsAzureIps`), and a client-IP check in the query editor. You need a Microsoft Entra admin, Entra-only auth, contained users `FROM EXTERNAL PROVIDER`, fixed database roles and `GRANT EXECUTE`. Each layer fails with the error SQL Server or ADF would give.
+- **T-SQL**, interpreted on SQLite:
+  - Statements and batches: GO batches, statements without semicolons, variables, IF/WHILE, TRY/CATCH/THROW, transactions, stored procedures.
+  - Queries and DDL: `TOP`/`OFFSET FETCH`, `SELECT … INTO` (keeps source types), `IDENTITY`, `MERGE` (must end with `;`), recursive CTEs, window functions, `INFORMATION_SCHEMA`.
+  - Functions: `CAST`/`CONVERT`/`TRY_*` with styles and us_english date parsing, `DATEADD`/`DATEDIFF`/`FORMAT`, and SQL Server `ROUND`.
+  - SQLite-only syntax (`LIMIT`, `CREATE TABLE AS`, `IFNULL`…) fails with SQL Server error numbers.
+- **Data Factory Studio** (Home · Author · Monitor · Manage):
+  - Building blocks: linked services (managed identity or account key) and parameterised datasets.
+  - Activities: Copy (wildcards, `$$FILEPATH`, pre-copy script, auto-create as `nvarchar(max)`, name mapping, type-conversion errors), Script, Stored procedure, Lookup, Set variable, Validation, Delete, Wait, Execute Pipeline, If Condition + Fail, and Execute Data Flow.
+  - Mapping data flows use the data flow expression language.
+  - Runs: dependency conditions, **Debug vs Publish all**, and schedule and storage-event triggers (Event Grid provider registration, `/container/blobs/` paths).
+  - Monitor shows ADF-shaped Input/Output/Error. You can export ADF JSON, the data flow script and the ARM template.
+- **Databricks-style notebooks** in Spark SQL: `read_files('abfss://…', format => 'csv', header => true)`, `_c0` columns without a header, `_rescued_data`, struct dot notation, temp views, and `INSERT OVERWRITE DIRECTORY` writing part files plus `_SUCCESS`. Storage access is checked against the workspace identity.
+- **Cloud Shell** with a working subset of the Azure CLI (`az group/storage/role/sql/datafactory/provider/databricks …`), `--query`, `-o tsv|table`, `$(…)` substitution, and `sqlcmd`.
+- JSON View for every resource, and Bicep export for a resource group.
 
-You need any static file server, because browsers block scripts loaded from `file://` pages:
+The in-app **Realism contract** page lists exactly what's identical, what's simulated and what's missing (no Python, Parquet/Delta, VNets or Key Vault, for example).
+
+## The course
+
+Ten practicals. Each has:
+
+1. **Lecture notes**: precise, with the numbers and rules that matter.
+2. **Pre-lab quiz** with explanations.
+3. **Specification**: exact names, types and behaviours, like a lab handout.
+4. **In real Azure**: portal click path, `az` CLI, T-SQL, ADF JSON or Bicep, gotchas, cost and teardown.
+5. **Autograder**: inspects your real state and attacks your solution. It runs your published pipelines twice, drops duplicate and corrected files, injects malformed data and breaks permissions during incident drills.
+
+| | Practical |
+|---|---|
+| P1 | The Azure resource model and a production-grade lake |
+| P2 | Identity and access: control plane vs data plane |
+| P3 | T-SQL for data engineers |
+| P4 | Batch ingestion with Azure Data Factory |
+| P5 | Dimensional modelling and ELT orchestration |
+| P6 | Incremental, event-driven ingestion |
+| P7 | Data quality gates and failure handling |
+| P8 | Mapping data flows |
+| P9 | Lakehouse notebooks with Spark SQL |
+| P10 | Operations: incident response drills |
+
+Grade = 85% practicals (best autograder score, minus 1 point per hint) + 15% quizzes.
+
+The built-in **instructor** (sparkle icon) sees your practical, resources, permissions and last failure. It works when the portal is opened as a Claude artifact.
+
+## Run locally
 
 ```bash
 python3 -m http.server 8080
 ```
 
-Then open http://localhost:8080. The first load fetches the SQL engine (about 1.3 MB) from jsDelivr.
-
-Your work is saved in the browser's IndexedDB, so it survives a reload but stays on that one browser. **Settings → Reset everything** starts over.
-
-## Sandbox helpers
-
-These work in any SQL editor, notebook cell or Script activity:
-
-```sql
-SELECT * FROM read_csv('lake://<account>/<container>/path/*.csv');
-SELECT * FROM read_json('lake://<account>/<container>/events/*.json');  -- nested objects are flattened: device.type → device_type
-SELECT * FROM read_table('<database>.<table>');                          -- notebooks: read a SQL database table
-```
-
-In a notebook, put `%%write lake://<account>/<container>/file.csv` (or `%%write sql://<db>/<table>`) as a cell's first line to save its result.
-
-Pipeline fields accept expressions: `@pipeline().parameters.fileName`, `bronze/orders/@{pipeline().parameters.fileName}`, `@triggerBody().fileName`, `@formatDateTime(utcNow(), 'yyyy-MM-dd')`, `addDays`, `concat`, `replace`, `toUpper` and more.
-
-## Labs
-
-1. Cloud foundations: groups, storage and the medallion lake
-2. Land raw data in the bronze zone
-3. SQL database and the query editor
-4. Your first pipeline: copy bronze → SQL staging
-5. ELT: build a star schema with Script activities
-6. Data flows: publish a gold dataset to the lake
-7. Parameters, expressions and event triggers
-8. Data quality gates
-9. Notebooks: explore and transform interactively
-10. Operate it: monitoring, scheduling and the CLI
-
-The sample data is a made-up online shop called ShopStream: daily order files, customers, products, clickstream JSON, and one deliberately messy file for the data quality lab. It's generated from a fixed seed, so every learner gets the same rows.
-
-## Limits
-
-- SQL is SQLite. T-SQL and Spark SQL differ in small ways (`TOP` vs `LIMIT`, date functions), which the labs point out.
-- There's no Python or Spark, and Parquet isn't supported. Files are CSV or JSON text.
-- Triggers only fire while the portal tab is open.
-- Data stays in your browser, so plan for a few tens of MB at most.
+Open http://localhost:8080. The SQL engine (sql.js, ~1.3 MB) loads from jsDelivr. Work is saved in this browser's IndexedDB.
 
 ## Files
 
 ```
-index.html          local entry point
-portal.html         same page without the document wrapper (used for the hosted artifact)
-css/portal.css      all styles, light and dark themes
-js/util.js          CSV/JSON parsing, modals, grids, charts
-js/icons.js         icons and service metadata
-js/datasets.js      ShopStream sample data generator
-js/store.js         state, IndexedDB persistence, lake + SQL engine
-js/engine.js        pipeline expressions, activities, runner, triggers
-js/labs.js          lab content and step checks
-js/app.js           shell, router, home, create flow, lists, settings
-js/views-*.js       storage, SQL, factory, notebook, learning/tutor/shell blades
+index.html / portal.html   entry points (portal.html is the artifact page)
+css/portal.css             styles, light and dark
+js/util.js icons.js datasets.js        helpers, icons, ShopStream sample data
+js/tsql.js                 T-SQL interpreter, Spark SQL and data flow expression compilers
+js/store.js                state, persistence, lake, RBAC, SQL networking and users
+js/engine.js adf.js        pipeline expressions; Data Factory runtime, triggers, JSON export
+js/app.js create.js        shell, routing, lists; create forms, ARM JSON, Bicep, subscription
+js/views-*.js              storage, SQL, Data Factory Studio, notebooks, tutor
+js/shell.js                Cloud Shell (az CLI subset)
+js/course.js views-course.js   DE101 content, autograders, course UI
 ```

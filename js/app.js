@@ -1,7 +1,8 @@
 /* Nimbus Portal — shell, router and core blades */
 (function (N) {
   const S = N.store, esc = N.esc, I = N.icon;
-  const REGIONS = ["South Africa North", "West Europe", "North Europe", "East US", "West US 2", "Central India", "Japan East", "Brazil South"];
+  const REGIONS = ["South Africa North", "West Europe", "North Europe", "UK South", "East US", "East US 2", "West US 2", "Central India", "Japan East", "Brazil South"];
+  N.regionCode = (r) => String(r).toLowerCase().replace(/\s+/g, "");
   N.REGIONS = REGIONS;
   N.views = {};
   let current = { view: "home" };
@@ -52,15 +53,17 @@
   const NAV = [
     { id: "create", label: "Create a resource", icon: "plus", route: { view: "create" } },
     { id: "home", label: "Home", icon: "home", route: { view: "home" } },
-    { id: "labs", label: "Learning center", icon: "labs", route: { view: "labs" } },
+    { id: "labs", label: "DE101 Practicals", icon: "labs", route: { view: "labs" } },
     { sep: true },
     { id: "resources", label: "All resources", icon: "grid", route: { view: "resources" } },
     { id: "rgs", label: "Resource groups", icon: "rg", route: { view: "rgs" } },
-    { id: "list-storage", label: "Lake storage", icon: "storage", route: { view: "list", type: "storage" }, type: "storage" },
+    { id: "list-storage", label: "Storage accounts", icon: "storage", route: { view: "list", type: "storage" }, type: "storage" },
+    { id: "list-sqlserver", label: "SQL servers", icon: "sql", route: { view: "list", type: "sqlserver" }, type: "sqlserver" },
     { id: "list-sqldb", label: "SQL databases", icon: "sql", route: { view: "list", type: "sqldb" }, type: "sqldb" },
-    { id: "list-factory", label: "Pipeline factories", icon: "factory", route: { view: "list", type: "factory" }, type: "factory" },
-    { id: "list-workspace", label: "Analytics workspaces", icon: "workspace", route: { view: "list", type: "workspace" }, type: "workspace" },
+    { id: "list-factory", label: "Data factories", icon: "factory", route: { view: "list", type: "factory" }, type: "factory" },
+    { id: "list-workspace", label: "Databricks workspaces", icon: "workspace", route: { view: "list", type: "workspace" }, type: "workspace" },
     { sep: true },
+    { id: "subscription", label: "Subscriptions", icon: "key", route: { view: "subscription" } },
     { id: "monitor", label: "Monitor", icon: "monitor", route: { view: "monitor" } },
     { id: "log", label: "Activity log", icon: "book", route: { view: "log" } },
     { id: "settings", label: "Settings", icon: "gear", route: { view: "settings" } },
@@ -127,7 +130,8 @@
     if (v === "list") active = "list-" + current.type;
     if (v === "resource") { const r = S.resById(current.id); active = r ? "list-" + r.type : ""; }
     if (v === "rg") active = "rgs";
-    if (v === "lab") active = "labs";
+    if (v === "lab" || v === "unit" || v === "course") active = "labs";
+    if (v === "studio") active = "list-factory";
     document.querySelectorAll(".nav-item").forEach((b) => b.classList.toggle("active", b.dataset.nav === active));
   }
 
@@ -161,7 +165,9 @@
     { label: "Analytics workspaces", route: { view: "list", type: "workspace" }, type: "workspace" },
     { label: "Resource groups", route: { view: "rgs" }, type: "rg" },
     { label: "Monitor", route: { view: "monitor" } },
-    { label: "Learning center", route: { view: "labs" } },
+    { label: "DE101 Practicals", route: { view: "labs" } },
+    { label: "Subscriptions · Resource providers", route: { view: "subscription", tab: "providers" } },
+    { label: "SQL servers", route: { view: "list", type: "sqlserver" }, type: "sqlserver" },
     { label: "Create a resource", route: { view: "create" } },
   ];
   function setupSearch() {
@@ -171,11 +177,11 @@
       if (!q) { pop.hidden = true; return; }
       const svc = SERVICES.filter((s) => s.label.toLowerCase().includes(q));
       const res = S.state.resources.filter((r) => r.name.toLowerCase().includes(q) || N.typeMeta[r.type].label.toLowerCase().includes(q));
-      const labs = N.labs.filter((l) => l.title.toLowerCase().includes(q) || l.concept.toLowerCase().includes(q)).slice(0, 5);
+      const labs = N.course.units.filter((l) => (l.code + " " + l.title).toLowerCase().includes(q) || l.lecture.toLowerCase().includes(q)).slice(0, 5);
       const sec = (title, items) => items.length ? `<div class="sp-sec">${title}</div>${items.join("")}` : "";
       pop.innerHTML = sec("Services", svc.map((s) => `<button class="sp-item" data-go='${esc(JSON.stringify(s.route))}'>${s.type ? N.tile(s.type, "tile-sm") : `<span class="nav-ic">${I("chevron")}</span>`}${esc(s.label)}</button>`)) +
         sec("Resources", res.map((r) => `<button class="sp-item" data-go='${esc(JSON.stringify({ view: "resource", id: r.id }))}'>${N.tile(r.type, "tile-sm")}<span>${esc(r.name)} <small>${esc(N.typeMeta[r.type].label)}</small></span></button>`)) +
-        sec("Labs", labs.map((l) => `<button class="sp-item" data-go='${esc(JSON.stringify({ view: "lab", id: l.id }))}'><span class="nav-ic">${I("labs")}</span>${esc(l.title)}</button>`)) ||
+        sec("DE101", labs.map((l) => `<button class="sp-item" data-go='${esc(JSON.stringify({ view: "unit", id: l.id }))}'><span class="nav-ic">${I("labs")}</span>${esc(l.code)} · ${esc(l.title)}</button>`)) ||
         `<div class="empty-note">No matches for “${esc(inp.value)}”.</div>`;
       pop.hidden = false;
     };
@@ -190,211 +196,11 @@
   /* ---------------- shared bits ---------------- */
   N.cmdbar = (items) => `<div class="cmdbar" role="toolbar">${items.filter(Boolean).map((it) => it === "|" ? `<span class="cmd-sep"></span>` : `<button class="cmd" ${it.id ? `id="${it.id}"` : ""} ${it.go ? `data-go='${esc(JSON.stringify(it.go))}'` : ""} ${it.disabled ? "disabled" : ""}>${I(it.icon)}<span>${esc(it.label)}</span></button>`).join("")}</div>`;
   N.statusPill = (s) => {
-    const k = { Succeeded: "ok", Failed: "bad", InProgress: "run", Queued: "run", Skipped: "muted", Cancelled: "muted", Running: "ok", Online: "ok", Enabled: "ok", Disabled: "muted", Started: "ok", Stopped: "muted" }[s] || "muted";
+    const k = { Succeeded: "ok", Failed: "bad", InProgress: "run", Queued: "run", Skipped: "muted", Cancelled: "muted", Running: "ok", Online: "ok", On: "ok", Registered: "ok", NotRegistered: "muted", Registering: "run", Available: "ok", Enabled: "ok", Disabled: "muted", Started: "ok", Stopped: "muted" }[s] || "muted";
     return `<span class="pill pill-${k}">${k === "run" ? `<span class="spin"></span>` : ""}${esc(s === "InProgress" ? "In progress" : s)}</span>`;
   };
   N.resLink = (r) => `<button class="link res-link" data-go='${esc(JSON.stringify({ view: "resource", id: r.id }))}'>${N.tile(r.type, "tile-sm")}<span>${esc(r.name)}</span></button>`;
   N.askTutor = (prompt) => { N.openTutor(prompt); };
-
-  /* ---------------- HOME ---------------- */
-  N.views.home = () => {
-    const recent = [...S.state.resources].sort((a, b) => b.created - a.created).slice(0, 8);
-    const nextLab = N.labs.find((l) => !N.labProgress(l).complete) || N.labs[N.labs.length - 1];
-    const totalSteps = N.labs.reduce((a, l) => a + l.steps.length, 0);
-    const doneSteps = N.labs.reduce((a, l) => a + N.labProgress(l).count, 0);
-    const lastRuns = S.state.runs.slice(0, 5);
-    const svc = [
-      { label: "Create a resource", icon: "plus", go: { view: "create" }, plain: true },
-      { label: "Lake storage", type: "storage", go: { view: "list", type: "storage" } },
-      { label: "SQL databases", type: "sqldb", go: { view: "list", type: "sqldb" } },
-      { label: "Pipeline factories", type: "factory", go: { view: "list", type: "factory" } },
-      { label: "Analytics workspaces", type: "workspace", go: { view: "list", type: "workspace" } },
-      { label: "Resource groups", type: "rg", go: { view: "rgs" } },
-      { label: "Monitor", icon: "monitor", go: { view: "monitor" }, plain: true },
-      { label: "Learning center", icon: "labs", go: { view: "labs" }, plain: true },
-    ];
-    return {
-      live: ["resource", "runs", "flag", "lake"],
-      html: `<div class="blade home">
-        <section class="home-hero">
-          <div>
-            <h1>Welcome to Nimbus</h1>
-            <p>A free cloud sandbox for learning data engineering. Everything runs in your browser: a real SQL engine, a data lake, pipelines and notebooks. Nothing costs money and nothing leaves this page.</p>
-          </div>
-          <div class="hero-progress">
-            <div class="hp-top"><span>Learning path</span><b>${doneSteps} / ${totalSteps} steps</b></div>
-            <div class="bar"><span style="width:${(doneSteps / totalSteps) * 100}%"></span></div>
-            <div class="hp-next">Next: <b>${esc(nextLab.title)}</b></div>
-            <button class="btn btn-primary" data-go='${esc(JSON.stringify({ view: "lab", id: nextLab.id }))}'>${doneSteps ? "Continue lab" : "Start the first lab"}</button>
-          </div>
-        </section>
-        <h2 class="sec-title">Services</h2>
-        <div class="svc-row">${svc.map((s) => `<button class="svc" data-go='${esc(JSON.stringify(s.go))}'>${s.plain ? `<span class="tile tile-lg tile-plain">${I(s.icon)}</span>` : N.tile(s.type, "tile-lg")}<span>${esc(s.label)}</span></button>`).join("")}</div>
-        <div class="home-cols">
-          <section class="panel">
-            <div class="panel-head"><h2>Recent resources</h2><button class="link" data-go='{"view":"resources"}'>See all</button></div>
-            ${recent.length ? `<table class="list"><thead><tr><th>Name</th><th>Type</th><th>Created</th></tr></thead><tbody>${recent.map((r) => `<tr><td>${N.resLink(r)}</td><td>${esc(N.typeMeta[r.type].label)}</td><td class="muted">${N.fmtTime(r.created)}</td></tr>`).join("")}</tbody></table>`
-              : `<div class="empty"><p>No resources yet. Lab 1 walks you through creating a resource group and a data lake.</p><button class="btn btn-primary" data-go='{"view":"lab","id":"cloud-basics"}'>Open lab 1</button> <button class="btn" id="quick-env">Quick-start environment</button></div>`}
-          </section>
-          <section class="panel">
-            <div class="panel-head"><h2>Recent pipeline runs</h2><button class="link" data-go='{"view":"monitor"}'>Monitor</button></div>
-            ${lastRuns.length ? `<table class="list"><tbody>${lastRuns.map((r) => `<tr><td><b>${esc(r.pipeline)}</b><br><small class="muted">${esc(r.factory)} · ${esc(r.trigger.name)}</small></td><td>${N.statusPill(r.status)}</td><td class="muted">${N.fmtTime(r.start)}</td></tr>`).join("")}</tbody></table>` : `<div class="empty-note">No runs yet. Build a pipeline in lab 4.</div>`}
-          </section>
-        </div>
-      </div>`,
-      mount(root) {
-        const q = root.querySelector("#quick-env");
-        if (q) q.onclick = () => quickStart();
-      },
-    };
-  };
-
-  /* One-click environment for people who want to skip lab 1–2 basics */
-  function quickStart() {
-    N.modal({
-      title: "Quick-start environment",
-      body: `<p>This creates a ready-made environment so you can jump to later labs:</p><ul><li>Resource group <code>rg-shopstream-dev</code></li><li>Lake storage <code>lakeshopdev</code> with bronze, silver and gold containers and all ShopStream samples in bronze</li><li>SQL database <code>sqldb-shopstream</code></li><li>Pipeline factory <code>adf-shopstream</code> with linked services <code>ls_lake</code> and <code>ls_sql</code></li><li>Analytics workspace <code>ws-shopstream</code></li></ul><p class="muted">If you want to learn the basics, do labs 1 and 2 by hand instead.</p>`,
-      actions: [{ label: "Create environment", kind: "primary", onClick: () => {
-        const rg = "rg-shopstream-dev", reg = "South Africa North";
-        S.createRG(rg, reg);
-        if (!S.res("storage", "lakeshopdev")) S.createResource("storage", "lakeshopdev", rg, reg, { hns: true, redundancy: "LRS", performance: "Standard" });
-        ["bronze", "silver", "gold"].forEach((c) => S.createContainer("lakeshopdev", c));
-        N.sampleCatalog.filter((d) => d.id !== "shopstream-dirty").forEach((d) => d.files().forEach((f) => S.putFile("lakeshopdev", "bronze", f.path, f.content, { source: "sample", silent: true })));
-        if (!S.res("sqldb", "sqldb-shopstream")) S.createResource("sqldb", "sqldb-shopstream", rg, reg, { tier: "Serverless" });
-        if (!S.res("factory", "adf-shopstream")) {
-          S.createResource("factory", "adf-shopstream", rg, reg, {});
-          S.state.factories["adf-shopstream"].linked.push({ name: "ls_lake", type: "lake", target: "lakeshopdev" }, { name: "ls_sql", type: "sql", target: "sqldb-shopstream" });
-        }
-        if (!S.res("workspace", "ws-shopstream")) S.createResource("workspace", "ws-shopstream", rg, reg, { tier: "Standard" });
-        S.notify("Quick-start environment ready", "Created 5 resources in rg-shopstream-dev.", "success");
-        S.changed("resource");
-        N.toast("Environment created", "success");
-      } }, { label: "Cancel" }],
-    });
-  }
-  N.quickStart = quickStart;
-
-  /* ---------------- CREATE ---------------- */
-  const CREATE_INFO = {
-    rg: "A logical container for resources that share a lifecycle.",
-    storage: "Durable file storage with folders. Turn on hierarchical namespace to use it as a data lake.",
-    sqldb: "A relational database with a browser query editor. Powered by SQLite.",
-    factory: "Build, schedule and monitor data pipelines that move and transform data.",
-    workspace: "Notebooks for exploring and transforming data interactively with SQL.",
-  };
-  N.views.create = (r) => {
-    if (r.type) return createForm(r);
-    return {
-      crumbs: [{ label: "Create a resource", route: { view: "create" } }],
-      html: `<div class="blade"><div class="blade-head"><h1>Create a resource</h1><p class="muted">Pick a service. Each card notes what it is called in Azure, so the names you learn here transfer.</p></div>
-        <div class="market">${["rg", "storage", "sqldb", "factory", "workspace"].map((t) => `<button class="mk-card" data-go='${esc(JSON.stringify({ view: "create", type: t }))}'>${N.tile(t, "tile-lg")}<div><b>${esc(N.typeMeta[t].label)}</b><p>${esc(CREATE_INFO[t])}</p>${N.typeMeta[t].real ? `<small>In Azure: ${esc(N.typeMeta[t].real)}</small>` : ""}<span class="mk-cta">Create</span></div></button>`).join("")}</div></div>`,
-    };
-  };
-
-  const NAME_RULES = {
-    rg: { re: /^[\w\-.()]{1,90}$/, msg: "1–90 characters: letters, digits, - _ . ( )" },
-    storage: { re: /^[a-z0-9]{3,24}$/, msg: "3–24 characters, lowercase letters and digits only. Must be unique." },
-    sqldb: { re: /^[a-zA-Z0-9][\w-]{0,62}$/, msg: "1–63 characters: letters, digits, - and _" },
-    factory: { re: /^[a-zA-Z0-9][a-zA-Z0-9-]{2,62}$/, msg: "3–63 characters: letters, digits and -" },
-    workspace: { re: /^[a-zA-Z0-9][\w-]{2,62}$/, msg: "3–63 characters: letters, digits, - and _" },
-  };
-
-  function createForm(r) {
-    const t = r.type, meta = N.typeMeta[t];
-    const form = r.form || (r.form = { rg: (S.state.rgs[0] || {}).name || "", newRg: "", name: "", region: REGIONS[0], hns: true, redundancy: "LRS", performance: "Standard", tier: "Serverless", ws: "Standard" });
-    const step = r.step || "basics";
-    const crumbs = [{ label: "Create a resource", route: { view: "create" } }, { label: meta.label, route: r }];
-    if (step === "deploy") return deployView(r, crumbs);
-    const errs = validate(t, form);
-    const typeFields = {
-      storage: `<div class="field"><label>Performance</label><div class="radios">${["Standard", "Premium"].map((v) => `<label><input type="radio" name="perf" value="${v}" ${form.performance === v ? "checked" : ""}> ${v}</label>`).join("")}</div></div>
-        <div class="field"><label for="f-red">Redundancy</label><select id="f-red">${[["LRS", "Locally-redundant storage (LRS)"], ["ZRS", "Zone-redundant storage (ZRS)"], ["GRS", "Geo-redundant storage (GRS)"]].map(([v, l]) => `<option value="${v}" ${form.redundancy === v ? "selected" : ""}>${l}</option>`).join("")}</select><small class="muted">How many copies of your data are kept and where. LRS is cheapest; GRS survives a regional outage.</small></div>
-        <div class="field"><label class="check"><input type="checkbox" id="f-hns" ${form.hns ? "checked" : ""}> Enable hierarchical namespace</label><small class="muted">Required for data lake workloads: real folders, atomic renames, per-directory permissions.</small></div>`,
-      sqldb: `<div class="field"><label for="f-tier">Compute tier</label><select id="f-tier">${["Serverless", "Provisioned", "Basic"].map((v) => `<option ${form.tier === v ? "selected" : ""}>${v}</option>`).join("")}</select><small class="muted">Serverless pauses when idle, which suits labs. (Sandbox only: every tier runs the same engine.)</small></div>`,
-      workspace: `<div class="field"><label for="f-ws">Pricing tier</label><select id="f-ws">${["Standard", "Premium"].map((v) => `<option ${form.ws === v ? "selected" : ""}>${v}</option>`).join("")}</select></div>`,
-      factory: `<div class="field"><label>Git configuration</label><label class="check"><input type="checkbox" disabled> Configure Git later</label><small class="muted">Production factories store pipeline JSON in Git for review and CI/CD.</small></div>`,
-      rg: "",
-    }[t];
-    const basics = `
-      <h3 class="form-sec">Project details</h3>
-      <div class="field"><label>Subscription</label><select disabled><option>Free learning subscription</option></select></div>
-      ${t !== "rg" ? `<div class="field"><label for="f-rg">Resource group <span class="req">*</span></label>
-        <select id="f-rg"><option value="">Select a resource group</option>${S.state.rgs.map((g) => `<option ${form.rg === g.name ? "selected" : ""}>${esc(g.name)}</option>`).join("")}<option value="__new" ${form.rg === "__new" ? "selected" : ""}>Create new…</option></select>
-        ${form.rg === "__new" ? `<input id="f-newrg" placeholder="New resource group name" value="${esc(form.newRg)}">` : ""}
-        ${errs.rg && r.touched ? `<small class="err">${esc(errs.rg)}</small>` : ""}</div>` : ""}
-      <h3 class="form-sec">${t === "rg" ? "Resource group details" : "Instance details"}</h3>
-      <div class="field"><label for="f-name">${t === "rg" ? "Resource group" : "Name"} <span class="req">*</span></label><input id="f-name" value="${esc(form.name)}" placeholder="${{ rg: "rg-shopstream-dev", storage: "lakeshopdev", sqldb: "sqldb-shopstream", factory: "adf-shopstream", workspace: "ws-shopstream" }[t]}" autocomplete="off">
-        ${errs.name && (r.touched || form.name) ? `<small class="err">${esc(errs.name)}</small>` : `<small class="muted">${esc(NAME_RULES[t].msg)}</small>`}</div>
-      <div class="field"><label for="f-region">Region</label><select id="f-region">${REGIONS.map((x) => `<option ${form.region === x ? "selected" : ""}>${x}</option>`).join("")}</select><small class="muted">Keep data, compute and users in the same region to cut latency and egress cost.</small></div>
-      ${typeFields}`;
-    const review = `<div class="callout callout-ok">${I("check")} Validation passed</div>
-      <table class="kv">${[["Subscription", "Free learning subscription"], t !== "rg" ? ["Resource group", form.rg === "__new" ? form.newRg + " (new)" : form.rg] : null, ["Name", form.name], ["Region", form.region],
-        t === "storage" ? ["Performance", form.performance] : null, t === "storage" ? ["Redundancy", form.redundancy] : null, t === "storage" ? ["Hierarchical namespace", form.hns ? "Enabled" : "Disabled"] : null,
-        t === "sqldb" ? ["Compute tier", form.tier] : null, t === "workspace" ? ["Pricing tier", form.ws] : null].filter(Boolean).map(([k, v]) => `<tr><th>${esc(k)}</th><td>${esc(v)}</td></tr>`).join("")}</table>
-      <p class="muted">In a paid cloud this resource would start billing now. Here it is free.</p>`;
-    return {
-      crumbs,
-      html: `<div class="blade"><div class="blade-head"><h1>Create ${esc(meta.label.toLowerCase())}</h1></div>
-        <div class="tabs"><button class="tab ${step === "basics" ? "active" : ""}" id="tab-basics">Basics</button><button class="tab ${step === "review" ? "active" : ""}" id="tab-review">Review + create</button></div>
-        <div class="form">${step === "basics" ? basics : review}</div>
-        <div class="form-foot">${step === "basics" ? `<button class="btn btn-primary" id="to-review">Review + create</button>` : `<button class="btn btn-primary" id="do-create">Create</button><button class="btn" id="to-basics">Previous</button>`}</div></div>`,
-      mount(root) {
-        const val = (id) => root.querySelector(id);
-        const bind = (id, key, ev = "input", rerender = false) => { const el = val(id); if (el) el.addEventListener(ev, () => { form[key] = el.type === "checkbox" ? el.checked : el.value; if (rerender) N.rerender(); }); };
-        bind("#f-name", "name"); bind("#f-region", "region", "change"); bind("#f-rg", "rg", "change", true); bind("#f-newrg", "newRg");
-        bind("#f-red", "redundancy", "change"); bind("#f-hns", "hns", "change"); bind("#f-tier", "tier", "change"); bind("#f-ws", "ws", "change");
-        root.querySelectorAll("input[name=perf]").forEach((el) => el.addEventListener("change", () => (form.performance = el.value)));
-        const toReview = () => { r.touched = true; const e = validate(t, form); if (Object.keys(e).length) { N.rerender(); N.toast(Object.values(e)[0], "error"); return; } r.step = "review"; N.rerender(); };
-        if (val("#to-review")) val("#to-review").onclick = toReview;
-        val("#tab-review").onclick = toReview;
-        val("#tab-basics").onclick = () => { r.step = "basics"; N.rerender(); };
-        if (val("#to-basics")) val("#to-basics").onclick = () => { r.step = "basics"; N.rerender(); };
-        if (val("#do-create")) val("#do-create").onclick = () => { r.step = "deploy"; r.deployStart = Date.now(); N.rerender(); doDeploy(r); };
-        if (val("#f-name")) val("#f-name").addEventListener("keydown", (e) => { if (e.key === "Enter") toReview(); });
-      },
-    };
-  }
-
-  function validate(t, f) {
-    const e = {};
-    if (!NAME_RULES[t].re.test(f.name || "")) e.name = f.name ? NAME_RULES[t].msg : "Enter a name.";
-    else if (t === "rg" ? S.state.rgs.some((g) => g.name.toLowerCase() === f.name.toLowerCase()) : S.nameTaken(t, f.name)) e.name = `A ${t === "rg" ? "resource group" : "resource"} named "${f.name}" already exists.`;
-    if (t !== "rg") {
-      if (!f.rg) e.rg = "Select or create a resource group.";
-      if (f.rg === "__new" && !NAME_RULES.rg.re.test(f.newRg || "")) e.rg = "Enter a valid name for the new resource group.";
-    }
-    return e;
-  }
-
-  function doDeploy(r) {
-    const f = r.form, t = r.type;
-    setTimeout(() => {
-      let rg = f.rg;
-      if (t === "rg") S.createRG(f.name, f.region);
-      else {
-        if (rg === "__new") { rg = f.newRg; S.createRG(rg, f.region); }
-        const props = t === "storage" ? { hns: f.hns, redundancy: f.redundancy, performance: f.performance } : t === "sqldb" ? { tier: f.tier } : t === "workspace" ? { tier: f.ws } : {};
-        r.created = S.createResource(t, f.name, rg, f.region, props);
-      }
-      r.done = true;
-      S.notify("Deployment succeeded", `${N.typeMeta[t].label} ${f.name} was created.`, "success");
-      S.changed("resource");
-      if (N.route() === r) N.rerender();
-    }, 1400);
-  }
-
-  function deployView(r, crumbs) {
-    const f = r.form;
-    return {
-      crumbs,
-      html: `<div class="blade"><div class="deploy">
-        <div class="deploy-ic ${r.done ? "ok" : ""}">${r.done ? I("check") : `<span class="spin spin-lg"></span>`}</div>
-        <div><h1>${r.done ? "Your deployment is complete" : "Deployment is in progress"}</h1>
-        <table class="kv"><tr><th>Deployment name</th><td>${esc(r.type)}-${esc(f.name)}-${new Date(r.deployStart).toISOString().slice(0, 16).replace(/[-:T]/g, "")}</td></tr><tr><th>Subscription</th><td>Free learning subscription</td></tr><tr><th>Start time</th><td>${N.fmtTime(r.deployStart)}</td></tr></table>
-        ${r.done ? `<div class="btn-row"><button class="btn btn-primary" data-go='${esc(JSON.stringify(r.type === "rg" ? { view: "rg", name: f.name } : { view: "resource", id: r.created.id }))}'>Go to resource</button><button class="btn" data-go='{"view":"create"}'>Create another resource</button></div>` : `<p class="muted">Behind the scenes a cloud turns your form into a template and provisions it. Real deployments take seconds to minutes.</p>`}</div>
-      </div></div>`,
-    };
-  }
 
   /* ---------------- LISTS ---------------- */
   function resourceTable(list, { showRg = true } = {}) {
@@ -443,10 +249,11 @@
       live: ["resource"],
       crumbs: [{ label: "Resource groups", route: { view: "rgs" } }, { label: g.name, route: r }],
       html: `<div class="blade"><div class="blade-head with-tile">${N.tile("rg", "tile-lg")}<div><h1>${esc(g.name)}</h1><p class="muted">Resource group</p></div></div>
-        ${N.cmdbar([{ icon: "plus", label: "Create", go: { view: "create" } }, "|", { icon: "trash", label: "Delete resource group", id: "del-rg" }])}
+        ${N.cmdbar([{ icon: "plus", label: "Create", go: { view: "create" } }, { icon: "code", label: "Export template", id: "exp-rg" }, "|", { icon: "trash", label: "Delete resource group", id: "del-rg" }])}
         <table class="kv essentials"><tr><th>Subscription</th><td>Free learning subscription</td></tr><tr><th>Location</th><td>${esc(g.region)}</td></tr><tr><th>Resources</th><td>${list.length}</td></tr></table>
         ${resourceTable(list, { showRg: false }) || `<div class="empty-note">This group is empty.</div>`}</div>`,
       mount(root) {
+        root.querySelector("#exp-rg").onclick = () => { const b = N.bicep(g.name); N.modal({ title: "Export template · Bicep", wide: true, body: `<p class="muted">Infrastructure as code for this resource group. Deploy it with:</p><pre>az deployment group create --resource-group ${esc(g.name)} --template-file main.bicep</pre><pre class="json">${esc(b)}</pre>`, actions: [{ label: "Copy", onClick: () => { N.copyText(b); return false; } }, { label: "Download main.bicep", onClick: () => { N.downloadText("main.bicep", b); return false; } }, { label: "Close" }] }); };
         root.querySelector("#del-rg").onclick = () => {
           N.modal({
             title: `Delete ${g.name}`,
@@ -490,14 +297,15 @@
   });
 
   N.overview = (res, extraRows, learnHtml) => `
-    ${N.cmdbar([{ icon: "trash", label: "Delete", id: "del-res" }, { icon: "tutor", label: "Ask tutor about this service", id: "ask-svc" }])}
+    ${N.cmdbar([{ icon: "trash", label: "Delete", id: "del-res" }, { icon: "code", label: "JSON View", id: "json-res" }, { icon: "tutor", label: "Ask tutor about this service", id: "ask-svc" }])}
     <h2 class="sec-title">Essentials</h2>
     <div class="essentials-grid"><table class="kv">
       <tr><th>Resource group</th><td><button class="link" data-go='${esc(JSON.stringify({ view: "rg", name: res.rg }))}'>${esc(res.rg)}</button></td></tr>
       <tr><th>Status</th><td>${N.statusPill(res.type === "sqldb" ? "Online" : "Running")}</td></tr>
       <tr><th>Location</th><td>${esc(res.region)}</td></tr>
-      <tr><th>Subscription</th><td>Free learning subscription</td></tr>
-      <tr><th>Created</th><td>${N.fmtTime(res.created)}</td></tr></table>
+      <tr><th>Subscription</th><td><button class="link" data-go='{"view":"subscription"}'>Free learning subscription</button></td></tr>
+      <tr><th>Subscription ID</th><td><code>${esc(S.state.subscriptionId)}</code></td></tr>
+      <tr><th>Tags</th><td>${Object.entries(res.props.tags || {}).map(([k, v]) => `<span class="pill pill-muted">${esc(k)} : ${esc(v)}</span>`).join(" ") || '<span class="muted">none</span>'}</td></tr></table>
       <table class="kv">${extraRows.map(([k, v]) => `<tr><th>${esc(k)}</th><td>${v}</td></tr>`).join("")}</table></div>
     <div class="learn-card">${I("book")}<div><b>How this maps to the real cloud</b><p>${esc(N.typeMeta[res.type].real)}.</p>${learnHtml || ""}</div></div>`;
   N.mountOverview = (root, res) => {
@@ -508,6 +316,7 @@
         actions: [{ label: "Delete", kind: "danger", onClick: async (close, w) => { if (w.querySelector("#cf").value !== res.name) { N.toast("The name does not match.", "error"); return false; } await S.deleteResource(res); N.toast(`Deleted ${res.name}`, "success"); N.go({ view: "list", type: res.type }); } }, { label: "Cancel" }],
       });
     };
+    root.querySelector("#json-res").onclick = () => N.modal({ title: "Resource JSON", wide: true, body: `<p class="muted">Every Azure resource is a JSON document managed by Azure Resource Manager. This is what <code>az resource show --ids …</code> returns.</p><div class="kv-inline"><span><b>Resource ID</b> <code>${esc(S.armId(res))}</code></span></div><pre class="json">${esc(JSON.stringify(N.armJson(res), null, 2))}</pre>`, actions: [{ label: "Copy", onClick: () => { N.copyText(JSON.stringify(N.armJson(res), null, 2)); return false; } }, { label: "Close" }] });
     root.querySelector("#ask-svc").onclick = () => N.askTutor(`Explain what a ${N.typeMeta[res.type].label} (${N.typeMeta[res.type].real}) is used for in data engineering, with one realistic example.`);
   };
 
@@ -529,6 +338,8 @@
         <div class="form">
           <h3 class="form-sec">Appearance</h3>
           <div class="field"><label>Theme</label><div class="radios">${["system", "light", "dark"].map((v) => `<label><input type="radio" name="theme" value="${v}" ${th === v ? "checked" : ""}> ${v[0].toUpperCase() + v.slice(1)}</label>`).join("")}</div></div>
+          <h3 class="form-sec">Realism</h3>
+          <div class="field"><div class="radios col"><label><input type="radio" name="realism" value="strict" ${S.realStrict() ? "checked" : ""}> <b>Strict</b>: behave like Azure (RBAC, firewalls, Entra users, T-SQL only, Event Grid registration). Required for grading.</label><label><input type="radio" name="realism" value="guided" ${S.realStrict() ? "" : "checked"}> <b>Guided</b>: skip identity and network checks and accept SQLite syntax. For exploring only.</label></div></div>
           <h3 class="form-sec">Your sandbox</h3>
           <table class="kv"><tr><th>Storage</th><td>${S.persistent ? "Saved in this browser (IndexedDB). It stays after reloads, but not across devices." : "Not persistent: this browser blocks storage, so work is lost on reload."}</td></tr>
           <tr><th>Resources</th><td>${S.state.resources.length}</td></tr><tr><th>Lake data</th><td>${N.fmtBytes(lakeBytes)}</td></tr><tr><th>Pipeline runs kept</th><td>${S.state.runs.length}</td></tr></table>
@@ -536,6 +347,7 @@
         </div></div>`,
       mount(root) {
         root.querySelectorAll("input[name=theme]").forEach((el) => el.addEventListener("change", () => N.setTheme(el.value)));
+        root.querySelectorAll("input[name=realism]").forEach((el) => el.addEventListener("change", () => { S.state.settings.realism = el.value; S.changed("settings"); N.toast(`Realism: ${el.value}`, "info"); }));
         root.querySelector("#reset").onclick = async () => {
           if (await N.confirmDialog("Reset the sandbox", "This deletes every resource group, resource, file, table, pipeline, run and lab progress. It cannot be undone.", "Reset everything")) {
             await S.resetAll(); N.toast("Sandbox reset", "success"); N.go({ view: "home" });

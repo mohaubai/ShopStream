@@ -4,10 +4,13 @@
 
   N.resourceTabs.storage = [
     { id: "overview", label: "Overview", icon: "info", render: overview },
+    { id: "iam", label: "Access control (IAM)", icon: "key", render: iam, live: ["iam"] },
     { group: "Data storage" },
-    { id: "containers", label: "Containers", icon: "folder", render: containers, live: ["lake"] },
+    { id: "containers", label: "Containers", icon: "folder", render: containers, live: ["lake", "iam"] },
     { group: "Security + networking" },
     { id: "keys", label: "Access keys", icon: "key", render: keys },
+    { group: "Settings" },
+    { id: "config", label: "Configuration", icon: "gear", render: config },
   ];
 
   function stats(res) {
@@ -22,13 +25,78 @@
     return {
       html: `<div class="blade">${N.overview(res, [
         ["Performance", esc(res.props.performance || "Standard")],
-        ["Redundancy", esc(res.props.redundancy || "LRS")],
-        ["Hierarchical namespace", res.props.hns ? "Enabled" : `Disabled <small class="muted">(not a data lake)</small>`],
-        ["Lake endpoint", `<code>lake://${esc(res.name)}/</code>`],
+        ["Replication", esc(String(res.props.redundancy || "LRS").replace("Standard_", ""))],
+        ["Account kind", "StorageV2 (general purpose v2)"],
+        ["Hierarchical namespace", res.props.hns ? "Enabled" : `Disabled <small class="muted">(not a data lake: no directories, no ACLs)</small>`],
+        ["Data Lake Storage endpoint", `<code>https://${esc(res.name)}.dfs.core.windows.net/</code>`],
+        ["Minimum TLS version", esc(String(res.props.minTls || "TLS1_2").replace("TLS", "").replace("_", "."))],
+        ["Storage account key access", res.props.allowSharedKey === false ? "Disabled" : "Enabled"],
         ["Containers", s.containers], ["Files", s.files], ["Used capacity", N.fmtBytes(s.bytes)],
-      ], `<p>Paths in this sandbox look like <code>lake://${esc(res.name)}/&lt;container&gt;/&lt;folder&gt;/&lt;file&gt;</code>. In Azure the same file would be <code>abfss://&lt;container&gt;@${esc(res.name)}.dfs.core.windows.net/&lt;folder&gt;/&lt;file&gt;</code>.</p>`)}
+      ], `<p>Spark and Databricks address files as <code>abfss://&lt;container&gt;@${esc(res.name)}.dfs.core.windows.net/&lt;folder&gt;/&lt;file&gt;</code>. Both that form and the short <code>lake://${esc(res.name)}/&lt;container&gt;/…</code> work in Nimbus notebooks.</p>`)}
         <div class="btn-row"><button class="btn btn-primary" data-go='${esc(JSON.stringify({ view: "resource", id: res.id, tab: "containers" }))}'>Open containers</button></div></div>`,
       mount: (root) => N.mountOverview(root, res),
+    };
+  }
+
+  function iam(res, r) {
+    const scopeAcct = S.armId(res);
+    const list = S.state.roles.filter((a) => a.scope === scopeAcct || a.scope.startsWith(scopeAcct + "/"));
+    const inherited = [{ principal: "learner@nimbuslearn.onmicrosoft.com", type: "User", role: "Owner", scope: "Subscription (Inherited)" }];
+    return {
+      html: `<div class="blade"><div class="blade-head"><h1>Access control (IAM)</h1><p class="muted">Azure RBAC: a <b>role</b> (what), a <b>principal</b> (who) and a <b>scope</b> (where). Data roles (Storage Blob Data …) control reading and writing files; Owner and Contributor only manage the resource.</p></div>
+        ${N.cmdbar([{ icon: "plus", label: "Add role assignment", id: "add-ra" }, { icon: "check", label: "Check access", id: "check" }])}
+        <div class="tabs"><span class="tab active">Role assignments</span></div>
+        <div class="table-wrap"><table class="list"><thead><tr><th>Name</th><th>Type</th><th>Role</th><th>Scope</th><th>Condition</th><th></th></tr></thead><tbody>
+          ${list.map((a) => { const pend = Date.now() - a.created < 8000; return `<tr><td>${I(a.principalType === "User" ? "key" : "factory")} ${esc(a.principal)}</td><td>${a.principalType === "User" ? "User" : "App (managed identity)"}</td><td><b>${esc(a.role)}</b> <small class="muted">${S.ROLE_DEFS[a.role].plane === "data" ? "data plane" : "control plane"}</small></td><td>${a.scope === scopeAcct ? "This resource" : `Container: ${esc(a.scope.split("/").pop())}`}${pend ? ` <span class="pill pill-run">propagating</span>` : ""}</td><td class="muted">None</td><td><button class="icon-btn" data-del="${a.id}" aria-label="Remove role assignment">${I("trash")}</button></td></tr>`; }).join("")}
+          ${inherited.map((a) => `<tr><td>${I("key")} ${esc(a.principal)}</td><td>${a.type}</td><td><b>${a.role}</b> <small class="muted">control plane</small></td><td class="muted">${a.scope}</td><td class="muted">None</td><td></td></tr>`).join("")}
+        </tbody></table></div>
+        <div class="snippet"><b>Azure CLI equivalent</b><pre>az role assignment create \
+  --assignee-object-id $(az datafactory show -g ${esc(res.rg)} -n &lt;factory&gt; --query identity.principalId -o tsv) \
+  --assignee-principal-type ServicePrincipal \
+  --role "Storage Blob Data Contributor" \
+  --scope ${esc(scopeAcct)}</pre></div></div>`,
+      mount(root) {
+        root.querySelector("#add-ra").onclick = () => addRole(res);
+        root.querySelectorAll("[data-del]").forEach((b) => (b.onclick = async () => { if (await N.confirmDialog("Remove role assignment", "The principal loses this access (after propagation).", "Remove")) S.removeRole(b.dataset.del); }));
+        root.querySelector("#check").onclick = () => {
+          const ps = [...S.resOfType("factory"), ...S.resOfType("workspace")].map((x) => x.name).concat(["learner@nimbuslearn.onmicrosoft.com"]);
+          const conts = Object.keys(S.state.lake[res.name].containers);
+          N.modal({ title: "Check access", wide: true, body: `<p class="muted">Effective data-plane access per container (after propagation).</p><div class="table-wrap"><table class="list"><thead><tr><th>Principal</th>${conts.map((c) => `<th>${esc(c)}</th>`).join("")}</tr></thead><tbody>${ps.map((p) => `<tr><td>${esc(p)}</td>${conts.map((c) => { const x = S.lakeRights(p, res.name, c); return `<td>${x.write ? "Read/Write" : x.read ? "Read" : x.pending ? "Pending" : "<span class='muted'>None</span>"}</td>`; }).join("")}</tr>`).join("")}</tbody></table></div>`, actions: [{ label: "Close" }] });
+        };
+      },
+    };
+  }
+  function addRole(res) {
+    const principals = [...S.resOfType("factory").map((x) => ({ name: x.name, kind: "Data Factory" })), ...S.resOfType("workspace").map((x) => ({ name: x.name, kind: "Databricks workspace" })), { name: "learner@nimbuslearn.onmicrosoft.com", kind: "User" }];
+    const conts = Object.keys(S.state.lake[res.name].containers);
+    N.modal({
+      title: "Add role assignment", wide: true,
+      body: `<div class="tabs small"><span class="tab active">Role</span><span class="tab">Members</span><span class="tab">Review + assign</span></div>
+        <div class="field"><label>Role</label><div class="role-list">${Object.entries(S.ROLE_DEFS).map(([k, v], i) => `<label class="sample-item"><input type="radio" name="role" value="${esc(k)}" ${k === "Storage Blob Data Contributor" ? "checked" : ""}><div><b>${esc(k)}</b> <span class="pill ${v.plane === "data" ? "pill-ok" : "pill-muted"}">${v.plane === "data" ? "Job function · data" : "Privileged administrator"}</span><p>${esc(v.desc)}</p></div></label>`).join("")}</div></div>
+        <div class="field"><label for="ra-p">Assign access to · Members</label><select id="ra-p">${principals.map((p) => `<option value="${esc(p.name)}" data-type="${p.kind === "User" ? "User" : "ManagedIdentity"}">${esc(p.name)} (${esc(p.kind === "User" ? "User" : "Managed identity · " + p.kind)})</option>`).join("")}</select></div>
+        <div class="field"><label for="ra-s">Scope</label><select id="ra-s"><option value="">Storage account: ${esc(res.name)}</option>${conts.map((c) => `<option value="${esc(c)}">Container: ${esc(c)}</option>`).join("")}</select><small class="muted">Least privilege: scope to the containers a principal really needs.</small></div>`,
+      actions: [{ label: "Review + assign", kind: "primary", onClick: (c, w) => {
+        const role = w.querySelector("input[name=role]:checked").value, sel = w.querySelector("#ra-p"), p = sel.value, type = sel.selectedOptions[0].dataset.type, cont = w.querySelector("#ra-s").value;
+        const scope = cont ? S.containerScope(res.name, cont) : S.armId(res);
+        if (!S.assignRole(p, type, role, scope)) { N.toast("That role assignment already exists.", "error"); return false; }
+        N.toast(`Added ${role} for ${p}. It can take a few minutes to take effect in Azure.`, "success", 5000);
+      } }, { label: "Cancel" }],
+    });
+  }
+  function config(res) {
+    const p = res.props;
+    return {
+      html: `<div class="blade"><div class="blade-head"><h1>Configuration</h1></div><div class="form">
+        <div class="field"><label>Secure transfer required</label><div class="radios"><label><input type="radio" checked disabled> Enabled</label></div></div>
+        <div class="field"><label>Allow Blob anonymous access</label><div class="radios"><label><input type="radio" name="anon" value="1" ${p.allowBlobPublic ? "checked" : ""}> Enabled</label><label><input type="radio" name="anon" value="0" ${!p.allowBlobPublic ? "checked" : ""}> Disabled</label></div></div>
+        <div class="field"><label>Allow storage account key access</label><div class="radios"><label><input type="radio" name="key" value="1" ${p.allowSharedKey !== false ? "checked" : ""}> Enabled</label><label><input type="radio" name="key" value="0" ${p.allowSharedKey === false ? "checked" : ""}> Disabled</label></div><small class="muted">Disabled forces Microsoft Entra ID for everyone, including the portal.</small></div>
+        <div class="field"><label for="tls">Minimum TLS version</label><select id="tls">${["TLS1_0", "TLS1_1", "TLS1_2"].map((v) => `<option value="${v}" ${(p.minTls || "TLS1_2") === v ? "selected" : ""}>Version ${v.slice(3).replace("_", ".")}</option>`).join("")}</select></div>
+        <div class="field"><label>Hierarchical namespace</label><input value="${p.hns ? "Enabled" : "Disabled"}" disabled>${p.hns ? "" : `<button class="btn btn-sm" id="upgrade">Upgrade to Data Lake Storage Gen2</button><small class="muted">A one-way upgrade. It can't be undone.</small>`}</div>
+        <div class="btn-row"><button class="btn btn-primary" id="save">Save</button></div></div></div>`,
+      mount(root) {
+        root.querySelector("#save").onclick = () => { p.allowBlobPublic = root.querySelector("input[name=anon]:checked").value === "1"; p.allowSharedKey = root.querySelector("input[name=key]:checked").value === "1"; p.minTls = root.querySelector("#tls").value; S.log("Update storage account", res.name); S.changed("resource"); N.toast("Saved", "success"); };
+        const up = root.querySelector("#upgrade"); if (up) up.onclick = async () => { if (await N.confirmDialog("Upgrade to Data Lake Storage Gen2", "Enable hierarchical namespace? This is irreversible.", "Upgrade", "primary")) { p.hns = true; S.log("Enable hierarchical namespace", res.name); S.changed("resource"); N.rerender(); } };
+      },
     };
   }
 
@@ -80,6 +148,9 @@
 
   function browser(res, r) {
     const c = S.container(res.name, r.cont);
+    if (S.realStrict() && res.props.allowSharedKey === false && !S.lakeRights("learner@nimbuslearn.onmicrosoft.com", res.name, r.cont).read) {
+      return { crumbs: [{ label: r.cont, route: r }], html: `<div class="blade"><div class="path-bar"><button class="link" data-go='${esc(JSON.stringify({ view: "resource", id: res.id, tab: "containers" }))}'>Containers</button><span class="sep">/</span>${esc(r.cont)}</div><div class="kv-inline"><span><b>Authentication method:</b> Microsoft Entra user account</span></div><div class="callout callout-error"><b>You do not have permissions to list the data using your user account with Microsoft Entra ID.</b><p>This storage account has key access disabled, so the portal signs in as you. Owner on the subscription manages the account but doesn't grant data access. Assign yourself <b>Storage Blob Data Contributor</b> on this account in Access control (IAM).</p><button class="btn btn-sm" data-go='${esc(JSON.stringify({ view: "resource", id: res.id, tab: "iam" }))}'>Open Access control (IAM)</button></div></div>` };
+    }
     const prefix = r.prefix || "";
     const folders = new Set(), files = [];
     for (const [p, f] of Object.entries(c.files)) {
@@ -184,9 +255,9 @@
         <div data-pp="grid">${err ? `<div class="callout callout-error">Could not parse: ${esc(err)}</div>` : N.grid(data.columns, data.rows, { max: 200 })}</div>
         <div data-pp="schema" hidden>${data ? `<table class="list"><thead><tr><th>Column</th><th>Inferred type</th><th>Nulls / empty</th><th>Example</th></tr></thead><tbody>${data.columns.map((c) => { const vals = data.rows.map((x) => x[c]); return `<tr><td><code>${esc(c)}</code></td><td>${N.inferType(vals)}</td><td>${vals.filter((v) => v === "" || v == null).length}</td><td class="muted">${esc(String(vals.find((v) => v !== "" && v != null) ?? ""))}</td></tr>`; }).join("")}</tbody></table><p class="muted">Types are inferred from values: CSV has no types of its own.</p>` : ""}</div>
         <div data-pp="raw" hidden><textarea class="code" id="raw-edit" rows="16" spellcheck="false">${esc(f.content.length > 300000 ? f.content.slice(0, 300000) : f.content)}</textarea>${f.content.length > 300000 ? `<p class="muted">Large file: editing is disabled.</p>` : ""}</div>
-        <div class="snippet"><b>Query it with SQL</b><pre>SELECT * FROM ${fn}('${esc(uri)}') LIMIT 100;</pre></div>`,
+        <div class="snippet"><b>Read it in a Databricks-style notebook (Spark SQL)</b><pre>SELECT * FROM read_files('abfss://${esc(cont)}@${esc(acct)}.dfs.core.windows.net/${esc(path)}', format => '${S.formatOf(path)}'${S.formatOf(path) === "csv" ? ", header => true" : ""});</pre><b>Copy it to your machine (AzCopy)</b><pre>azcopy copy 'https://${esc(acct)}.dfs.core.windows.net/${esc(cont)}/${esc(path)}' './${esc(path.split("/").pop())}'</pre></div>`,
       actions: [
-        sqldbs.length ? { label: "Open in query editor", kind: "primary", onClick: () => { N.pendingQuery = `SELECT *\nFROM ${fn}('${uri}')\nLIMIT 100;`; N.go({ view: "resource", id: sqldbs[0].id, tab: "query" }); } } : null,
+
         { label: "Save edits", onClick: (cl, w) => { if (f.content.length > 300000) return; S.putFile(acct, cont, path, w.querySelector("#raw-edit").value, { source: "editor" }); N.toast("Saved", "success"); } },
         { label: "Close" },
       ].filter(Boolean),

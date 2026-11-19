@@ -60,10 +60,11 @@
   /* Colored tile icons for resource types */
   N.typeMeta = {
     rg: { label: "Resource group", plural: "Resource groups", icon: "rg", hue: "var(--t-rg)" },
-    storage: { label: "Lake storage account", plural: "Lake storage accounts", icon: "storage", hue: "var(--t-storage)", real: "Azure Data Lake Storage Gen2 / Storage account" },
-    sqldb: { label: "SQL database", plural: "SQL databases", icon: "sql", hue: "var(--t-sql)", real: "Azure SQL Database" },
-    factory: { label: "Pipeline factory", plural: "Pipeline factories", icon: "factory", hue: "var(--t-factory)", real: "Azure Data Factory / Synapse pipelines" },
-    workspace: { label: "Analytics workspace", plural: "Analytics workspaces", icon: "workspace", hue: "var(--t-ws)", real: "Azure Databricks / Synapse workspace" },
+    storage: { label: "Storage account", plural: "Storage accounts", icon: "storage", hue: "var(--t-storage)", real: "Azure Storage account with hierarchical namespace (ADLS Gen2)" },
+    sqlserver: { label: "SQL server", plural: "SQL servers", icon: "sql", hue: "var(--t-sqlsrv)", real: "Azure SQL logical server (Microsoft.Sql/servers)" },
+    sqldb: { label: "SQL database", plural: "SQL databases", icon: "sql", hue: "var(--t-sql)", real: "Azure SQL Database (Microsoft.Sql/servers/databases)" },
+    factory: { label: "Data factory", plural: "Data factories", icon: "factory", hue: "var(--t-factory)", real: "Azure Data Factory (Microsoft.DataFactory/factories)" },
+    workspace: { label: "Databricks workspace", plural: "Databricks workspaces", icon: "workspace", hue: "var(--t-ws)", real: "Azure Databricks workspace (notebooks with Spark SQL)" },
   };
   N.tile = (type, size = "") => {
     const m = N.typeMeta[type] || { icon: "file", hue: "var(--muted)" };

@@ -71,8 +71,19 @@
     pipeline: (ctx) => ctx.pipeline,
     triggerbody: (ctx) => ctx.triggerBody || {},
     trigger: (ctx) => ctx.trigger || {},
-    variables: (ctx, n) => (ctx.variables || {})[n],
+    variables: (ctx, n) => { const v = ctx.variables || {}; if (!(n in v)) throw new Error(`The variable '${n}' is not declared in this pipeline.`); return v[n]; },
+    activity: (ctx, n) => { const o = (ctx.outputs || {})[n]; if (o === undefined) throw new Error(`The output of activity '${n}' can't be referenced since it is either not an ancestor to the current activity or does not exist`); return { output: o }; },
+    dataset: (ctx) => ctx.dataset || {},
+    greater: (ctx, a, b) => cmp(a, b) > 0, greaterorequals: (ctx, a, b) => cmp(a, b) >= 0, less: (ctx, a, b) => cmp(a, b) < 0, lessorequals: (ctx, a, b) => cmp(a, b) <= 0,
+    and: (ctx, ...a) => a.every(Boolean), or: (ctx, ...a) => a.some(Boolean), not: (ctx, a) => !a,
+    empty: (ctx, a) => a == null || a === "" || (Array.isArray(a) && !a.length) || (typeof a === "object" && !Object.keys(a).length),
+    mul: (ctx, a, b) => Number(a) * Number(b), div: (ctx, a, b) => (Number.isInteger(+a) && Number.isInteger(+b) ? Math.trunc(a / b) : a / b), mod: (ctx, a, b) => a % b,
+    float: (ctx, v) => parseFloat(v), bool: (ctx, v) => v === true || /^true$/i.test(String(v)) || v === 1,
+    contains: (ctx, c, v) => (Array.isArray(c) ? c.includes(v) : typeof c === "object" && c ? v in c : String(c).includes(String(v))),
+    indexof: (ctx, s, v) => String(s).indexOf(String(v)), trim: (ctx, s) => String(s).trim(), json: (ctx, s) => JSON.parse(s), createarray: (ctx, ...a) => a,
+    startofday: (ctx, v, f) => { const d = new Date(v); d.setUTCHours(0, 0, 0, 0); return f ? fmtDate(d, f) : d.toISOString(); },
   };
+  function cmp(a, b) { const x = Number(a), y = Number(b); if (!isNaN(x) && !isNaN(y) && a !== "" && b !== "") return x - y; return String(a) < String(b) ? -1 : String(a) > String(b) ? 1 : 0; }
 
   function evalExpr(src, ctx) {
     const t = tokenize(src);
@@ -245,7 +256,7 @@
     return `WITH ${ctes.join(",\n")}\nSELECT * FROM s${steps.length}`;
   }
 
-  async function execActivity(fac, a, ctx) {
+  async function execLegacy(fac, a, ctx) {
     switch (a.type) {
       case "wait": await N.sleep(Math.min(30, Number(a.seconds) || 0) * 1000); return { waitedSeconds: Number(a.seconds) || 0 };
       case "copy": {
@@ -314,98 +325,6 @@
     throw new Error("Unknown activity type " + a.type);
   }
 
-  /* ================= Runner ================= */
-  const running = new Set();
-  async function runPipeline(facName, plName, params = {}, trigger = { type: "Manual", name: "Trigger now" }, extra = {}) {
-    const fac = S.state.factories[facName];
-    const pl = fac && fac.pipelines.find((p) => p.name === plName);
-    if (!pl) throw new Error(`Pipeline ${plName} not found`);
-    const run = {
-      id: (crypto.randomUUID ? crypto.randomUUID() : N.uid()).slice(0, 18), factory: facName, pipeline: plName, status: "Queued",
-      start: Date.now(), end: null, trigger, params: {}, activities: [], error: null,
-    };
-    (pl.params || []).forEach((p) => (run.params[p.name] = params[p.name] !== undefined && params[p.name] !== "" ? params[p.name] : p.default));
-    S.state.runs.unshift(run);
-    S.state.runs.length = Math.min(S.state.runs.length, 200);
-    S.changed("runs");
-    running.add(facName + "/" + plName);
-    const ctx = {
-      pipeline: { parameters: run.params, RunId: run.id, TriggerTime: new Date(run.start).toISOString(), TriggerType: trigger.type, Pipeline: plName, DataFactory: facName, TriggerName: trigger.name },
-      triggerBody: extra.triggerBody || {},
-    };
-    await N.sleep(350);
-    run.status = "InProgress"; S.changed("runs");
-    let failed = false;
-    for (const a of pl.activities) {
-      const ar = { name: a.name, type: a.type, status: failed ? "Skipped" : "InProgress", start: Date.now(), end: null, input: null, output: null, error: null };
-      run.activities.push(ar);
-      if (failed) { ar.end = Date.now(); continue; }
-      S.changed("runs");
-      try {
-        const resolved = resolveDeep(JSON.parse(JSON.stringify(a)), ctx);
-        ar.input = resolved;
-        await N.sleep(300 + Math.random() * 500);
-        ar.output = await execActivity(fac, resolved, ctx);
-        ar.status = "Succeeded";
-      } catch (e) {
-        ar.status = "Failed";
-        ar.error = e.message || String(e);
-        if (!a.continueOnError) failed = true;
-      }
-      ar.end = Date.now();
-      S.changed("runs");
-    }
-    run.status = failed ? "Failed" : run.activities.some((x) => x.status === "Failed") ? "Succeeded" : "Succeeded";
-    if (failed) run.error = run.activities.find((x) => x.status === "Failed").error;
-    run.end = Date.now();
-    running.delete(facName + "/" + plName);
-    S.log(`Pipeline run: ${plName}`, facName, run.status === "Succeeded" ? "Succeeded" : "Failed");
-    S.notify(`Pipeline ${plName} ${run.status === "Succeeded" ? "succeeded" : "failed"}`, failed ? run.error : `${run.activities.length} activities in ${N.fmtDur(run.end - run.start)}. Trigger: ${trigger.name}.`, failed ? "error" : "success");
-    S.changed("runs");
-    return run;
-  }
 
-  /* ================= Triggers ================= */
-  function fireTrigger(facName, trg, triggerBody) {
-    const fac = S.state.factories[facName];
-    if (!fac.pipelines.some((p) => p.name === trg.pipeline)) return;
-    if (running.has(facName + "/" + trg.pipeline) && trg.type === "storage") {
-      S.notify(`Trigger ${trg.name} skipped`, `Pipeline ${trg.pipeline} is already running. Skipping prevents a loop when a pipeline writes into the folder that triggers it.`, "warn");
-      return;
-    }
-    const ctx = { pipeline: { TriggerTime: new Date().toISOString(), TriggerName: trg.name, parameters: {} }, triggerBody: triggerBody || {} };
-    const params = {};
-    try { for (const [k, v] of Object.entries(trg.params || {})) params[k] = resolve(v, ctx); }
-    catch (e) { S.notify(`Trigger ${trg.name} failed`, e.message, "error"); return; }
-    runPipeline(facName, trg.pipeline, params, { type: trg.type === "storage" ? "BlobEvent" : "Schedule", name: trg.name }, { triggerBody }).catch(() => {});
-  }
-
-  function onBlobCreated(acct, cont, path) {
-    for (const [facName, fac] of Object.entries(S.state.factories)) {
-      for (const trg of fac.triggers || []) {
-        if (!trg.enabled || trg.type !== "storage") continue;
-        const ls = fac.linked.find((l) => l.name === trg.linked);
-        if (!ls || ls.target !== acct || trg.container !== cont) continue;
-        if (trg.prefix && !path.startsWith(trg.prefix.replace(/^\/+/, ""))) continue;
-        if (trg.suffix && !path.endsWith(trg.suffix)) continue;
-        const slash = path.lastIndexOf("/");
-        setTimeout(() => fireTrigger(facName, trg, { fileName: path.slice(slash + 1), folderPath: cont + "/" + path.slice(0, Math.max(0, slash)), container: cont, account: acct, path }), 200);
-      }
-    }
-  }
-
-  function tick() {
-    const now = Date.now();
-    for (const [facName, fac] of Object.entries(S.state.factories)) {
-      for (const trg of fac.triggers || []) {
-        if (!trg.enabled || trg.type !== "schedule") continue;
-        const every = Math.max(1, Number(trg.everyMinutes) || 5) * 60000;
-        if (!trg.lastFired) { trg.lastFired = now; S.save(); continue; }
-        if (now - trg.lastFired >= every) { trg.lastFired = now; S.save(); fireTrigger(facName, trg, {}); }
-      }
-    }
-  }
-  setInterval(tick, 10000);
-
-  N.engine = { evalExpr, resolve, ACT, newActivity, runPipeline, onBlobCreated, buildFlowSQL, fireTrigger, fmtDate };
+  N.engine = { evalExpr, resolve, resolveDeep, ACT, newActivity, execLegacy, readSource, writeSink, buildFlowSQL, fmtDate };
 })(window.N);
